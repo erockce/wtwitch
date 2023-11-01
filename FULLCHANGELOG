@@ -210,3 +210,17 @@
     
 2.5.1 (July 15, 2022)
     Added full command name completion to new zsh completion from elig0n (PR#10)
+
+2.6.0 (September 12, 2022)
+    If custom title is set in streamlink config, set it as the mpv window title from michaeldxyz (PR#15)
+    Show streamer names as formatted in Twitch chat from michaeldxyz (PR#16)
+    
+2.6.1 (February 05, 2023)
+    Use a separate file for API token from ruitcatarino (PR#19)
+
+2.6.2 (May 03, 2023)
+    Fix issue #21 (subscribing to a substring of an already subscribed channel fails)
+    Attempt a fix for issue #20 (commands fail when the Twitch API returns a 401 "Invalid OAuth Token")
+
+2.6.3 (July 22, 2023)
+    Fix issue #24 (update to streamlink 6.0.0 breaks wtwitch) (PR#25)

@@ -4,7 +4,7 @@
 
 A terminal program for Twitch. Watch and browse Twitch without proprietary JavaScript and without being tracked.
 
-![Screenshot](https://krathalan.net/wtwitch.webp)
+![Screenshot](https://krathalan.net/wtwitch1.webp)
 
 Table of contents:
 
@@ -19,12 +19,12 @@ Table of contents:
 9. [Technical information](#technical-information)
 
 ## Project status
-Wtwitch is generally considered to be feature-complete. However, there is more work that can be done, in order of importance:
+Wtwitch is generally considered to be feature-complete. I will continue to fix bugs, though the fixes may take a while. However, I will happily review and accept PRs. There is more work that can be done, in order of importance:
 
 - Maintain compatibility with current Twitch API, including adding support for API request(s) useful to wtwitch users
 - Improve translations
 - Add a configuration menu so there are not a lot of configuration commands
-- Rewrite in a compiled language for speed
+- Any [requested enhancements](https://github.com/krathalan/wtwitch/issues?q=is%3Aissue+is%3Aopen+label%3Aenhancement)
 
 ## How to use
 Wtwitch has the following commands:
@@ -67,43 +67,29 @@ AUR releases are signed so you'll need to import my GPG key:
 
 If you're having keyserver issues, grab it from my website: https://krathalan.net/keys/dev.asc
 
+### Ubuntu
+Please note that Ubuntu ships an older version of Streamlink that does not have bug fixes in it for the Twitch plugin. See more information here: https://github.com/streamlink/streamlink/issues/4670
+
+You may need to install `curl` and `jq`. You may be able to install `streamlink` as an AppImage: https://github.com/streamlink/streamlink-appimage
+
+Afterwards, [clone the repo](#other_distros).
+
+### Other distros
+Clone the repository: `git clone https://github.com/krathalan/wtwitch`
+
+Then add the `src/` directory in the cloned wtwitch repo to your `$PATH`. You may need to install `curl`, `jq`, and `streamlink`. See this page for distro-specific streamlink installation instructions: https://streamlink.github.io/install.html
+
 ### macOS
 You need to install additional dependencies through e.g. [homebrew](https://brew.sh/):
 
-```
-brew install bash coreutils jq
-```
+> `$ brew install bash coreutils curl jq streamlink`
 
-Afterwards, [clone the repo](#any-distro).
-
-### Ubuntu
-Please note that Ubuntu ships an older version of Streamlink that does not have bug fixes in it for the Twitch plugin.
-
-You have a few options:
-
-1. Contact the maintainer of Streamlink for Ubuntu
-
-2. Use a different distribution which provides a more up-to-date Streamlink
-
-3. Use the Streamlink installation instructions for Ubuntu [from Streamlink's website](https://streamlink.github.io/install.html):
-
-```
-$ sudo add-apt-repository ppa:nilarimogard/webupd8
-
-$ sudo apt update
-
-$ sudo apt install streamlink
-```
-
-Afterwards, clone the repo like any distro other than Arch.
+Afterwards, [clone the repo](#other_distros).
 
 ### BSD systems
-You will need to install Bash, the GNU coreutils, `jq`, and `streamlink`.
+You will need to install Bash, the GNU coreutils, `curl`, `jq`, and `streamlink`.
 
-### Any distro
-Clone the repository: `git clone https://github.com/krathalan/wtwitch`
-
-Then add the `src/` directory in the cloned wtwitch repo to your `$PATH`.
+Afterwards, [clone the repo](#other_distros).
 
 ## More information
 See `man wtwitch` if you have the AUR package installed.
@@ -154,7 +140,7 @@ Wtwitch never collects any usage data or data about the user. Wtwitch only conne
 2. Through `streamlink` to Twitch's video servers to get video data for a streamer you request to watch
 
 ## Technical information
-Wtwitch is written entirely in Bash, utilizing programs written mostly in C. It doesn't make any connections to any server other than Twitch's servers. As soon as a wtwitch command executes (e.g. `wtwitch -c`), wtwitch stops running -- it doesn't stay open. (Wtwitch does stay open when you're watching a stream, but it uses no CPU and less than 5 MB of RAM.)
+Wtwitch is written entirely in Bash, utilizing programs written mostly in C. It doesn't make any connections to any server other than Twitch's servers. As soon as a wtwitch command executes (e.g. `wtwitch c`), wtwitch stops running -- it doesn't stay open. (Wtwitch does stay open when you're watching a stream, but it uses no CPU and less than 5 MB of RAM.)
 
 Here's a list of the CLI programs Wtwitch utilizes to process data and the language they're written in:
 

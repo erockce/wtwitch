@@ -3,8 +3,8 @@
 # Description: Browse and watch Twitch without being tracked.
 #    Homepage: https://github.com/krathalan/wtwitch
 #
-# Copyright (C) 2019-2020:
-readonly CONTRIBUTORS="krathalan, nycko123, Léo Villeveygoux, René de Hesselle, incompetentcoder, yazgoo, michaeldxyz, elig0n"
+# Copyright (C) 2019-2023:
+readonly CONTRIBUTORS="krathalan, nycko123, Léo Villeveygoux, René de Hesselle, incompetentcoder, yazgoo, michaeldxyz, elig0n, ruitcatarino, kars0n777, 3ship"
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -64,7 +64,7 @@ set -Eeuo pipefail
 
 # Script (self) information
 readonly SCRIPT_NAME="${0##*/}"
-readonly VERSION="2.5.1"
+readonly VERSION="2.6.3"
 
 # Subscription check cache
 readonly CACHE_EXPIRY_TIME="60" # In seconds
@@ -80,6 +80,7 @@ readonly CACHE_USER_ID_FILE="${CACHE_FILE_DIRECTORY}/userids.json"
 # Config
 readonly CONFIG_FILE_DIRECTORY="${XDG_CONFIG_HOME:-${HOME}/.config}/${SCRIPT_NAME}"
 readonly CONFIG_FILE="${CONFIG_FILE_DIRECTORY}/config.json"
+readonly API_FILE="${CONFIG_FILE_DIRECTORY}/api.json"
 readonly BLOCKLIST_FILE="${CONFIG_FILE_DIRECTORY}/blocklist"
 
 # If exists, source this for additional environment setup.
@@ -519,8 +520,26 @@ clean_up_tmp()
 #######################################
 download_file()
 {
-  curl "${curlFlags}" --header "Client-ID: ${TWITCH_API_KEY}" \
-  --header "Authorization: Bearer ${apiToken}" "$1"
+  local fileToReturn
+  fileToReturn="$(curl "${curlFlags}" --header "Client-ID: ${TWITCH_API_KEY}" \
+  --header "Authorization: Bearer ${apiToken}" "$1")"
+
+  # Fix issue #20
+  local checkTokenError
+  checkTokenError="$(jq -r '.error' <<< "${fileToReturn}")"
+
+  if [[ "${checkTokenError}" == "Unauthorized" ]]; then
+    checkTokenError="$(jq -r '.message' <<< "${fileToReturn}")"
+
+    if [[ "${checkTokenError}" == "Invalid OAuth token" ]]; then
+      download_token
+
+      fileToReturn="$(curl "${curlFlags}" --header "Client-ID: ${TWITCH_API_KEY}" \
+      --header "Authorization: Bearer ${apiToken}" "$1")"
+    fi
+  fi
+
+  printf "%s" "${fileToReturn}"
 }
 
 #######################################
@@ -621,6 +640,42 @@ get_user_id()
 }
 
 #######################################
+# Returns a streamer's name formatted as in a twitch
+# chat. E.g. if a name is in Hangul then it is inside
+# parenthesis and the channel name shown next to it.
+# Arguments:
+#   $1: assoc. array with json file containing streamer data
+#   $2: json array index
+# Returns:
+#   formatted streamer name or null
+#######################################
+get_streamer_name()
+{
+  local -nr jsonRef="$1"
+
+  for json in "${!jsonRef[@]}"; do
+    case $json in
+      searchJson)
+        jq -r ".data[$2] | \
+          if (.display_name | length) != 0 and (.display_name | ascii_downcase) != .broadcaster_login then \
+            .broadcaster_login + \"(\" + .display_name + \")\" \
+          else \
+            .display_name \
+          end" <<< "${jsonRef[$json]}"
+        ;;
+      allStreamerJson|topStreamsJson|twitchJson)
+        jq -r ".data[$2] | \
+          if (.user_name | length) != 0 and (.user_name | ascii_downcase) != .user_login then \
+            .user_login + \"(\" + .user_name + \")\" \
+          else \
+            .user_name \
+          end" <<< "${jsonRef[$json]}"
+        ;;
+    esac
+  done
+}
+
+#######################################
 # Gets a localized string of the requested key.
 # Arguments:
 #   $1: key of translation; e.g. flags_no_game
@@ -705,6 +760,20 @@ write_setting()
 }
 
 #######################################
+# Writes a setting value to the api file.
+# Arguments:
+#   $1: key
+#   $2: value
+# Returns:
+#   none
+#######################################
+write_api_setting()
+{
+  local -r tmpJson="$(jq "$1 = \"$2\"" "${API_FILE}")"
+  printf "%s" "${tmpJson}" > "${API_FILE}"
+}
+
+#######################################
 # Invalidates the cache generated from [c]heck command.
 # Arguments:
 #   none
@@ -742,8 +811,8 @@ download_token()
   apiToken="${newToken}"
 
   # Add token to config and update token expiration date
-  write_setting ".apiToken" "${newToken}"
-  write_setting ".apiTokenExpiry" "$(LANG=C ${DATE_CMD} -d tomorrow +%s)"
+  write_api_setting ".apiToken" "${newToken}"
+  write_api_setting ".apiTokenExpiry" "$(LANG=C ${DATE_CMD} -d tomorrow +%s)"
 }
 
 # -----------------------------------------
@@ -865,7 +934,7 @@ cache_online_subscription_json()
     printf "%s" "${allStreamerJson}" > "${CACHE_CHECK_JSON_TEXT_FILE}"
 
     # Print usernames to cache file for easy mapfile-ing for tab completion
-    jq -r ".data[].user_name" <<< "${allStreamerJson}" > "${CACHE_ONLINE_SUBS_TEXT_FILE}"
+    jq -r ".data[].user_login" <<< "${allStreamerJson}" > "${CACHE_ONLINE_SUBS_TEXT_FILE}"
 
     # Update lastSubscriptionUpdate time
     write_setting ".lastSubscriptionUpdate" "${CURRENT_TIME_UNIX}" &
@@ -930,7 +999,7 @@ check_twitch_streams()
 
   # Get a cache of the current online streamers
   cache_online_subscription_json
-  local -r allStreamerJson="$(<"${CACHE_CHECK_JSON_TEXT_FILE}")"
+  declare -Ar jsonArr=([allStreamerJson]="$(<"${CACHE_CHECK_JSON_TEXT_FILE}")")
 
   # Format the json cache into a pretty output
   make_tmp
@@ -944,40 +1013,45 @@ check_twitch_streams()
   # --> always (without subshells) if DEBUGGING=on
   # --> don't if DEBUGGING!=on and printOfflineSubscriptions=false
   if [[ "${DEBUGGING}" == "on" ]]; then
-    get_offline_streams "${allStreamerJson}"
+    get_offline_streams "${jsonArr[allStreamerJson]}"
   elif [[ "${printOfflineSubscriptions}" == "true" ]]; then
-    get_offline_streams "${allStreamerJson}" &
+    get_offline_streams "${jsonArr[allStreamerJson]}" &
   fi
 
   # Pass each streamer json data to check_twitch_streams_helper to parse,
   # get game name for, and print
   local whileCounter=0
 
-  local streamerToProcess=""
-  streamerToProcess="$(jq -r ".data[${whileCounter}]" <<< "${allStreamerJson}")"
+  local streamerDataToProcess=""
+  streamerDataToProcess="$(jq -r ".data[${whileCounter}]" <<< "${jsonArr[allStreamerJson]}")"
+
+  local streamerName
+  streamerName="$(get_streamer_name jsonArr "${whileCounter}")"
 
   # If streamer data is empty (e.g. wtwitch user is offline), exit
-  [[ -z "${streamerToProcess}" ]] &&
+  [[ -z "${streamerDataToProcess}" ]] &&
     exit_script_on_failure "$(get_translation info_fetch_failure). $(get_translation check_internet)"
 
   # Don't use subshells when debugging is on
   # Code is duplicated here because testing if DEBUGGING=on every iteration
   # of the while loop takes a lot more time (~20-30% more)
   if [[ "${DEBUGGING}" == "on" ]]; then
-    while [[ "${streamerToProcess}" != "null" ]]; do
-      check_twitch_streams_helper "${streamerToProcess}"
+    while [[ "${streamerDataToProcess}" != "null" ]]; do
+      check_twitch_streams_helper "${streamerDataToProcess}" "${streamerName}"
 
       # Refresh data
       whileCounter="$(( whileCounter + 1 ))"
-      streamerToProcess="$(jq -r ".data[${whileCounter}]" <<< "${allStreamerJson}")"
+      streamerName="$(get_streamer_name jsonArr "${whileCounter}")"
+      streamerDataToProcess="$(jq -r ".data[${whileCounter}]" <<< "${jsonArr[allStreamerJson]}")"
     done
   else
-    while [[ "${streamerToProcess}" != "null" ]]; do
-      check_twitch_streams_helper "${streamerToProcess}" &
+    while [[ "${streamerDataToProcess}" != "null" ]]; do
+      check_twitch_streams_helper "${streamerDataToProcess}" "${streamerName}" &
 
       # Refresh data
       whileCounter="$(( whileCounter + 1 ))"
-      streamerToProcess="$(jq -r ".data[${whileCounter}]" <<< "${allStreamerJson}")"
+      streamerName="$(get_streamer_name jsonArr "${whileCounter}")"
+      streamerDataToProcess="$(jq -r ".data[${whileCounter}]" <<< "${jsonArr[allStreamerJson]}")"
     done
   fi
 
@@ -1062,33 +1136,34 @@ get_offline_streams_helper()
 # Used by check_twitch_streams to facilitate
 # multi-process fetching and parsing of json data.
 # Arguments:
-#   $1: json data for streamer to process
+#   $1: json data for streamer data to process
+#   $2: streamer name formatted as in a twitch chat
 # Returns:
 #   none
 #######################################
 check_twitch_streams_helper()
 {
   local streamerData
-  mapfile -t streamerData <<< "$(jq -r ".user_name, .game_id, .title" <<< "$1")"
+  mapfile -t streamerData <<< "$(jq -r ".game_id, .title" <<< "$1")"
 
   # Update last seen time value
-  printf "%s" "${CURRENT_TIME_UNIX}" > "${LAST_SEEN_DIRECTORY}/$(to_lowercase "${streamerData[0]}")"
+  printf "%s" "${CURRENT_TIME_UNIX}" > "${LAST_SEEN_DIRECTORY}/$(to_lowercase "$2")"
 
   # Get stream game name from game ID
   local streamGame
-  streamGame="$(get_game_name "${streamerData[1]}")"
+  streamGame="$(get_game_name "${streamerData[0]}")"
 
   # Get streamer-set stream name
   # Truncate stream name if necessary; some streamers have stream titles longer
   # than the terminal width and cause ugly output
-  local -r maxTitleLength="$(( TERMINAL_WIDTH - TITLE_CHARACTERS - ${#streamGame} - ${#streamerData[0]} - 2 ))"
-  local streamName="${streamerData[2]:0:${maxTitleLength}}"
+  local -r maxTitleLength="$(( TERMINAL_WIDTH - TITLE_CHARACTERS - ${#streamGame} - ${#2} - 2 ))"
+  local streamName="${streamerData[1]:0:${maxTitleLength}}"
 
   if [[ "${#streamName}" == "${maxTitleLength}" ]]; then
     streamName+="…"
   fi
 
-  printf "   %b%s%b: %s %b(%s)%b\n" "${LIGHTGREEN}" "${streamerData[0]}" "${NC}" "${streamName}" "${ORANGE}" "${streamGame}" "${NC}" >> "${TMP_ONLINE_TEXT_FILE}"
+  printf "   %b%s%b: %s %b(%s)%b\n" "${LIGHTGREEN}" "$2" "${NC}" "${streamName}" "${ORANGE}" "${streamGame}" "${NC}" >> "${TMP_ONLINE_TEXT_FILE}"
 }
 
 #######################################
@@ -1119,6 +1194,7 @@ list_streamers_of_game()
   gameName=${gameName//&/%26}
 
   # Get game_id
+  declare -A jsonArr
   local twitchJson
   twitchJson="$(download_file "${TWITCH_API_URL}/games?name=${gameName}")"
   local -r gameID="$(jq -r ".data[0].id" <<< "${twitchJson}")"
@@ -1147,24 +1223,24 @@ list_streamers_of_game()
     fi
 
     # Get streamers
-    twitchJson="$(download_file "${TWITCH_API_URL}/streams?game_id=${gameID}&first=${linesToPrint}${paginationText}")"
+    jsonArr[twitchJson]="$(download_file "${TWITCH_API_URL}/streams?game_id=${gameID}&first=${linesToPrint}${paginationText}")"
 
     local whileCounter=0
 
     local streamerName=""
-    streamerName="$(jq -r ".data[${whileCounter}].user_name" <<< "${twitchJson}")"
+    streamerName="$(get_streamer_name jsonArr "${whileCounter}")"
 
     while [[ "${streamerName}" != "null" ]]; do
       # Don't use subshells when debugging is on
       if [[ "${DEBUGGING}" == "on" ]]; then
-        print_stream_info "${whileCounter}" "${twitchJson}" "${streamerName}" "${TMP_STREAMERS_OF_GAME_TEXT_FILE}"
+        print_stream_info "${whileCounter}" "${jsonArr[twitchJson]}" "${streamerName}" "${TMP_STREAMERS_OF_GAME_TEXT_FILE}"
       else
-        print_stream_info "${whileCounter}" "${twitchJson}" "${streamerName}" "${TMP_STREAMERS_OF_GAME_TEXT_FILE}" &
+        print_stream_info "${whileCounter}" "${jsonArr[twitchJson]}" "${streamerName}" "${TMP_STREAMERS_OF_GAME_TEXT_FILE}" &
       fi
 
       # Refresh data
       whileCounter="$(( whileCounter + 1 ))"
-      streamerName="$(jq -r ".data[${whileCounter}].user_name" <<< "${twitchJson}")"
+      streamerName="$(get_streamer_name jsonArr "${whileCounter}")"
     done
 
     wait
@@ -1188,7 +1264,7 @@ list_streamers_of_game()
       [Nn])
         showMoreStreamers="true"
         # Get pagination cursor
-        paginationText="&after=$(jq -r .pagination.cursor <<< "${twitchJson}")"
+        paginationText="&after=$(jq -r .pagination.cursor <<< "${jsonArr[twitchJson]}")"
         # Clear output file
         printf "" > "${TMP_STREAMERS_OF_GAME_TEXT_FILE}"
 
@@ -1340,12 +1416,12 @@ list_top()
 #######################################
 list_top_streams()
 {
-  local -r topStreamsJson="$(download_file "${TWITCH_API_URL}/streams?first=20")"
+  declare -Ar jsonArr=([topStreamsJson]="$(download_file "${TWITCH_API_URL}/streams?first=20")")
 
   local whileCounter=0
 
   local streamerName=""
-  streamerName="$(jq -r ".data[${whileCounter}].user_name" <<< "${topStreamsJson}")"
+  streamerName="$(get_streamer_name jsonArr "${whileCounter}")"
 
   # Reduce number of external program calls
   VIEWERS_TEXT="$(get_translation viewers)"
@@ -1354,14 +1430,14 @@ list_top_streams()
   while [[ "${streamerName}" != "null" ]]; do
     # Don't use subshells when debugging is on
     if [[ "${DEBUGGING}" == "on" ]]; then
-      print_stream_info "${whileCounter}" "${topStreamsJson}" "${streamerName}" "${TMP_TOP_STREAMS_TEXT_FILE}" --print-game
+      print_stream_info "${whileCounter}" "${jsonArr[topStreamsJson]}" "${streamerName}" "${TMP_TOP_STREAMS_TEXT_FILE}" --print-game
     else
-      print_stream_info "${whileCounter}" "${topStreamsJson}" "${streamerName}" "${TMP_TOP_STREAMS_TEXT_FILE}" --print-game &
+      print_stream_info "${whileCounter}" "${jsonArr[topStreamsJson]}" "${streamerName}" "${TMP_TOP_STREAMS_TEXT_FILE}" --print-game &
     fi
 
     # Refresh data
     whileCounter="$(( whileCounter + 1 ))"
-    streamerName="$(jq -r ".data[${whileCounter}].user_name" <<< "${topStreamsJson}")"
+    streamerName="$(get_streamer_name jsonArr "${whileCounter}")"
   done
 
   wait
@@ -1408,12 +1484,12 @@ search_channels()
   # Replace spaces in search term with %20 for URL
   local -r searchTerm=${1// /%20}
 
-  local -r searchJson="$(download_file "${TWITCH_API_URL}/search/channels?query=${searchTerm}&first=40")"
+  declare -Ar jsonArr=([searchJson]="$(download_file "${TWITCH_API_URL}/search/channels?query=${searchTerm}&first=40")")
 
   local whileCounter=0
 
   local channelName=""
-  channelName="$(jq -r ".data[${whileCounter}].display_name" <<< "${searchJson}")"
+  channelName="$(get_streamer_name jsonArr "${whileCounter}")"
 
   # Reduce number of external program calls
   LIVE_TEXT="$(get_translation live)"
@@ -1424,14 +1500,14 @@ search_channels()
   while [[ "${channelName}" != "null" ]]; do
     # Don't use subshells when debugging is on
     if [[ "${DEBUGGING}" == "on" ]]; then
-      print_stream_info "${whileCounter}" "${searchJson}" "${channelName}" "${TMP_SEARCH_TEXT_FILE}"
+      print_stream_info "${whileCounter}" "${jsonArr[searchJson]}" "${channelName}" "${TMP_SEARCH_TEXT_FILE}"
     else
-      print_stream_info "${whileCounter}" "${searchJson}" "${channelName}" "${TMP_SEARCH_TEXT_FILE}" &
+      print_stream_info "${whileCounter}" "${jsonArr[searchJson]}" "${channelName}" "${TMP_SEARCH_TEXT_FILE}" &
     fi
 
     # Refresh data
     whileCounter="$(( whileCounter + 1 ))"
-    channelName="$(jq -r ".data[${whileCounter}].display_name" <<< "${searchJson}")"
+    channelName="$(get_streamer_name jsonArr "${whileCounter}")"
   done
 
   wait
@@ -1487,19 +1563,25 @@ stream()
 
   # If using mpv: add window title, enable hardware dec, and use wayland if possible
   if [[ "${userPlayer}" == "mpv" ]]; then
-    userPlayer+=" --hwdec=auto"
+    playerArgs="--hwdec=auto"
 
     if [[ $(pgrep wayland) || $(pgrep sway) ]]; then
-      userPlayer+=" --gpu-context=wayland"
+      playerArgs+=" --gpu-context=wayland"
     fi
 
-    if [[ "${WTWITCH_LANG}" == "de" ]]; then
+    # If custom title is set in streamlink config, set it as mpvWindowTitle
+    local -r streamlinkConfig="${XDG_CONFIG_HOME:-${HOME}/.config}/streamlink/config"
+    local -r streamlinkArg="title"
+
+    if grep -xq "${streamlinkArg}=.*" "${streamlinkConfig}" 2> /dev/null; then
+      local -r mpvWindowTitle="$(grep -x "${streamlinkArg}.*" "${streamlinkConfig}" | sed 's/title=//' )"
+    elif [[ "${WTWITCH_LANG}" == "de" ]]; then
       local -r mpvWindowTitle="$1 ${localizedStrings[6]} ${localizedStrings[5]}"
     else
       local -r mpvWindowTitle="${localizedStrings[5]} $1 ${localizedStrings[6]}"
     fi
 
-    streamlink -p "${userPlayer}" --title "${mpvWindowTitle}" --twitch-disable-ads "https://www.twitch.tv/$1" "${userQuality}" || stream_failure_notify "$1" "$1's ${localizedStrings[4]} ${userQuality}."
+    streamlink -p "${userPlayer}" -a "${playerArgs}" --title "${mpvWindowTitle}" --twitch-disable-ads "https://www.twitch.tv/$1" "${userQuality}" || stream_failure_notify "$1" "$1's ${localizedStrings[4]} ${userQuality}."
   else
     streamlink -p "${userPlayer}" --twitch-disable-ads "https://www.twitch.tv/$1" "${userQuality}" || stream_failure_notify "$1" "$1's ${localizedStrings[4]} ${userQuality}."
   fi
@@ -1521,9 +1603,11 @@ subscribe()
   while [[ $# -gt 0 ]]; do
     streamerToSubscribeTo="$(to_lowercase "$1")"
 
-    # Check to make sure user isn't already subscribed
-    glob "$(<"${CONFIG_FILE}")" "*${streamerToSubscribeTo}*" &&
+    # Check to make sure user isn't subscribed first
+    # Do not use glob, have to use grep to fix issue #21
+    if jq -r '.subscriptions[].streamer' "${CONFIG_FILE}" | grep -q "^${streamerToSubscribeTo}$"; then
       exit_script_on_failure "$(get_translation subscribe_failure) ${streamerToSubscribeTo}."
+    fi
 
     # Add subscription (can't use write_setting here due to unique jq syntax)
     tmpJson="$(jq ".subscriptions[.subscriptions | length] |= . + {\"streamer\":\"$streamerToSubscribeTo\"}" "${CONFIG_FILE}")"
@@ -1599,8 +1683,10 @@ unsubscribe()
     streamerToUnsubscribeFrom="$(to_lowercase "$1")"
 
     # Check to make sure user is subscribed before unsubscribing
-    glob "$(<"${CONFIG_FILE}")" "*${streamerToUnsubscribeFrom}*" ||
+    # Do not use glob, have to use grep to fix issue #21
+    if ! jq -r '.subscriptions[].streamer' "${CONFIG_FILE}" | grep -q "^${streamerToUnsubscribeFrom}$"; then
       exit_script_on_failure "$(get_translation unsubscribe_failure) ${streamerToUnsubscribeFrom}."
+    fi
 
     # Remove subscription
     tmpJson="$(jq "del(.subscriptions[] | select(.streamer == \"${streamerToUnsubscribeFrom}\"))" "${CONFIG_FILE}")"
@@ -1656,7 +1742,6 @@ block()
 
   invalidate_cache
 }
-
 
 #######################################
 # Lists the available VODs for a specified streamer.
@@ -1889,6 +1974,11 @@ if [[ ! -f "${CONFIG_FILE}" ]]; then
   printf "{\"player\": \"mpv\",\"quality\": \"best\",\"colors\": \"true\",\"printOfflineSubscriptions\": \"true\",\"subscriptions\": []}" > "${CONFIG_FILE}"
 fi
 
+if [[ ! -f "${API_FILE}" ]]; then
+  # Default config
+  printf "{}" > "${API_FILE}"
+fi
+
 if [[ ! -f "${ENVIRONMENT_FILE}" ]]; then
   printf '#!/usr/bin/env sh\n\n# You can put commands or variables here for wtwitch to source.\n# This is useful on macOS, for example, to set a custom PATH or PYTHONPATH\n# to support non-standard locations specifically for wtwitch.\n' > "${ENVIRONMENT_FILE}"
 fi
@@ -1902,13 +1992,14 @@ source "${ENVIRONMENT_FILE}"
 # printOfflineSubscriptions must be malleable because it must be initialized to T/F if it is null (i.e. does not exist in config file yet)
 # userPlayer must be malleable because it must be updated if the user's default
 #   player is mpv and they don't have it installed but have vlc installed
-mapfile -t userSettings <<< "$(jq -r ".apiToken, .apiTokenExpiry, .colors, .printOfflineSubscriptions, .player, .quality" "${CONFIG_FILE}")"
-apiToken="${userSettings[0]}"
-readonly apiTokenExpiry="${userSettings[1]}"
-readonly useColors="${userSettings[2]}"
-printOfflineSubscriptions="${userSettings[3]}"
-userPlayer="${userSettings[4]}"
-readonly userQuality="${userSettings[5]}"
+mapfile -t userSettings <<< "$(jq -r ".colors, .printOfflineSubscriptions, .player, .quality" "${CONFIG_FILE}")"
+mapfile -t apiSettings <<< "$(jq -r ".apiToken, .apiTokenExpiry" "${API_FILE}")"
+apiToken="${apiSettings[0]}"
+readonly apiTokenExpiry="${apiSettings[1]}"
+readonly useColors="${userSettings[0]}"
+printOfflineSubscriptions="${userSettings[1]}"
+userPlayer="${userSettings[2]}"
+readonly userQuality="${userSettings[3]}"
 blocklist="$(<"${BLOCKLIST_FILE}")"
 readonly blocklist
 
